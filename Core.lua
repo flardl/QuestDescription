@@ -66,12 +66,15 @@ DescModule.bg:SetPoint("TOPLEFT", DescModule, "TOPLEFT")
 DescModule.bg:SetGradient("HORIZONTAL", CreateColor(0, 0, 0, 0.4), CreateColor(0, 0, 0, 0))
 
 -- 5. Hidden measurement FontString (anchored so GetStringHeight works)
-local MeasureString = UIParent:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+local MeasureFrame = CreateFrame("Frame")
+MeasureFrame:SetSize(215, 1)
+MeasureFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -10000, 10000)
+MeasureFrame:Hide()
+local MeasureString = MeasureFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
 MeasureString:SetWidth(215)
 MeasureString:SetWordWrap(true)
 MeasureString:SetSpacing(2)
-MeasureString:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 0, 0)
-MeasureString:SetAlpha(0)
+MeasureString:SetAllPoints(MeasureFrame)
 
 -- 6. Quest description lookup
 local function GetBestQuestDescription(questID)
@@ -108,32 +111,48 @@ local blizzardModules = {
     BonusObjectiveTracker
 }
 
+local function GetFirstVisibleTrackerModule()
+    if ObjectiveTrackerFrame and ObjectiveTrackerFrame.modules then
+        for _, mod in ipairs(ObjectiveTrackerFrame.modules) do
+            if mod and mod:IsVisible() then
+                return mod
+            end
+        end
+    end
+    return nil
+end
+
 local isApplyingLayout = false
 local function ForceAnchorToDesc(module)
     if isApplyingLayout or InCombatLockdown() then return end
     if not DescModule:IsVisible() then return end
 
-    local firstVisible = nil
-    for _, mod in ipairs(blizzardModules) do
-        if mod and mod:IsVisible() then
-            firstVisible = mod
-            break
-        end
-    end
+    local firstVisible = GetFirstVisibleTrackerModule()
 
     if module == firstVisible then
         isApplyingLayout = true
         module:ClearAllPoints()
-        module:SetPoint("TOPLEFT", DescModule, "BOTTOMLEFT", 0, -10)
+        module:SetPoint("TOP", DescModule, "BOTTOM", 0, -10)
         isApplyingLayout = false
     end
 end
 
+-- Hook SetPoint on all tracker modules (named globals + any dynamic ones)
+local hookedModules = {}
+local function HookModuleSetPoint(module)
+    if not module or hookedModules[module] then return end
+    hookedModules[module] = true
+    hooksecurefunc(module, "SetPoint", function()
+        ForceAnchorToDesc(module)
+    end)
+end
+
 for _, module in ipairs(blizzardModules) do
-    if module then
-        hooksecurefunc(module, "SetPoint", function()
-            ForceAnchorToDesc(module)
-        end)
+    HookModuleSetPoint(module)
+end
+if ObjectiveTrackerFrame.modules then
+    for _, module in ipairs(ObjectiveTrackerFrame.modules) do
+        HookModuleSetPoint(module)
     end
 end
 
@@ -245,6 +264,13 @@ local function UpdateContent()
         local wasVisible = DescModule:IsVisible()
         DescModule:Hide()
         if wasVisible then
+            isApplyingLayout = true
+            local firstVisible = GetFirstVisibleTrackerModule()
+            if firstVisible then
+                firstVisible:ClearAllPoints()
+                firstVisible:SetPoint("TOPLEFT", ObjectiveTrackerFrame, "TOPLEFT", 0, 0)
+            end
+            isApplyingLayout = false
             C_Timer.After(0, RequestTrackerLayout)
         end
     end
@@ -273,6 +299,17 @@ EventFrame:SetScript("OnEvent", function(_, event)
     if event == "VARIABLES_LOADED" then
         DescModule.isCollapsed = AddQuestInfoSaved.isCollapsed or false
         UpdateMinimizeButtonTexture()
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        local done = false
+        local origUA = ObjectiveTrackerManager.UpdateAll
+        ObjectiveTrackerManager.UpdateAll = function(self, ...)
+            if not done then
+                done = true
+                ObjectiveTrackerManager.UpdateAll = origUA
+                UpdateContent()
+            end
+            return origUA(self, ...)
+        end
     else
         UpdateContent()
     end
