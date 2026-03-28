@@ -1,5 +1,5 @@
 ## Interface: 120000
 ## Title: QuestDescription
 ## Notes: Adds the descriptions of the tracked Quest to the Objective Tracker.
-## Version: v1.0
+## Version: v1.2
 Core.lua
