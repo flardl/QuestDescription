@@ -65,18 +65,34 @@ DescModule.bg = DescModule:CreateTexture(nil, "BACKGROUND")
 DescModule.bg:SetPoint("TOPLEFT", DescModule, "TOPLEFT")
 DescModule.bg:SetGradient("HORIZONTAL", CreateColor(0, 0, 0, 0.4), CreateColor(0, 0, 0, 0))
 
--- 5. Hidden measurement FontString (anchored so GetStringHeight works)
--- Use a dedicated hidden frame as parent to avoid tainting UIParent's
--- coordinate space. The frame is moved off-screen so it is never visible.
-local MeasureFrame = CreateFrame("Frame")
-MeasureFrame:SetSize(215, 1)
-MeasureFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -10000, 10000)
-MeasureFrame:Hide()
-local MeasureString = MeasureFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-MeasureString:SetWidth(215)
-MeasureString:SetWordWrap(true)
-MeasureString:SetSpacing(2)
-MeasureString:SetAllPoints(MeasureFrame)
+-- 5. Height estimation without GetStringHeight() to avoid taint.
+-- GameFontHighlight uses a ~12px line height with 2px spacing = 14px per line.
+-- We estimate lines by character count divided by chars-per-line at width 215.
+-- At ~6.5px average char width, 215px wide = ~33 chars per line.
+local FONT_LINE_HEIGHT = 14  -- px per line (12px font + 2px spacing)
+local CHARS_PER_LINE = 33    -- approximate at 215px width
+
+local function EstimateTextHeight(text)
+    if not text or text == "" then return 0 end
+    local lines = 0
+    -- Split on newlines by scanning bytes
+    local segLen = 0
+    for i = 1, #text do
+        local b = string.byte(text, i)
+        if b == 10 then  -- newline byte
+            lines = lines + math.max(1, math.ceil(segLen / CHARS_PER_LINE))
+            segLen = 0
+        else
+            segLen = segLen + 1
+        end
+    end
+    -- Count last segment if no trailing newline
+    if segLen > 0 then
+        lines = lines + math.max(1, math.ceil(segLen / CHARS_PER_LINE))
+    end
+    if lines == 0 then lines = 1 end
+    return lines * FONT_LINE_HEIGHT
+end
 
 -- 6. Quest description lookup
 local function GetBestQuestDescription(questID)
@@ -186,9 +202,7 @@ local function UpdateCachedReservedHeight(description)
         cachedReservedHeight = DescModule.isCollapsed and (25 + 10) or 0
         return
     end
-    MeasureString:SetText(description)
-    local textHeight = MeasureString:GetStringHeight()
-    MeasureString:SetText("")
+    local textHeight = EstimateTextHeight(description)
     cachedReservedHeight = 25 + textHeight + 15 + 10
 end
 
@@ -303,22 +317,24 @@ UpdateContent = function()
         DescModule.Text:SetText(description)
         DescModule.Text:SetShown(not DescModule.isCollapsed)
 
-        -- DescModule frame ops (SetHeight, SetPoint, Show) are safe in combat.
-        -- Only RequestTrackerLayout (which calls UpdateAll) must be deferred.
-        local headerHeight = 25
-        local textHeight = DescModule.isCollapsed and 0 or (DescModule.Text:GetStringHeight() + 15)
-        local totalHeight = headerHeight + textHeight
-
-        local wasVisible = DescModule:IsVisible()
-        local oldHeight = DescModule:GetHeight()
-
-        DescModule:SetHeight(totalHeight)
-        DescModule.bg:SetSize(250, totalHeight)
-        DescModule:ClearAllPoints()
-        DescModule:SetPoint("TOPLEFT", OTF, "TOPLEFT", 0, -30)
-        DescModule:Show()
-
+        -- All frame ops (SetHeight, SetPoint, Show) must be skipped in combat
+        -- as they taint frame geometry and cause ADDON_ACTION_BLOCKED errors.
+        -- Text and cache updates are safe as they do not touch coordinates.
         if not inCombat then
+            local headerHeight = 25
+            local currentDesc = DescModule.Text:GetText() or ""
+            local textHeight = DescModule.isCollapsed and 0 or (EstimateTextHeight(currentDesc) + 15)
+            local totalHeight = headerHeight + textHeight
+
+            local wasVisible = DescModule:IsVisible()
+            local oldHeight = DescModule:GetHeight()
+
+            DescModule:SetHeight(totalHeight)
+            DescModule.bg:SetSize(250, totalHeight)
+            DescModule:ClearAllPoints()
+            DescModule:SetPoint("TOPLEFT", OTF, "TOPLEFT", 0, -30)
+            DescModule:Show()
+
             for _, module in ipairs(blizzardModules) do
                 if module and module:IsVisible() then
                     ForceAnchorToDesc()
